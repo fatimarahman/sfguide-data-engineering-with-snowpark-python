@@ -1,15 +1,6 @@
-/*-----------------------------------------------------------------------------
-Hands-On Lab: Data Engineering with Snowpark
-Script:       01_setup_snowflake.sql
-Author:       Jeremiah Hansen
-Last Updated: 1/1/2023
------------------------------------------------------------------------------*/
-
-
 -- ----------------------------------------------------------------------------
 -- Step #1: Accept Anaconda Terms & Conditions
 -- ----------------------------------------------------------------------------
-
 -- See Getting Started section in Third-Party Packages (https://docs.snowflake.com/en/developer-guide/udf/python/udf-python-packages.html#getting-started)
 
 
@@ -20,60 +11,157 @@ USE ROLE ACCOUNTADMIN;
 
 -- Roles
 SET MY_USER = CURRENT_USER();
-CREATE OR REPLACE ROLE HOL_ROLE;
-GRANT ROLE HOL_ROLE TO ROLE SYSADMIN;
-GRANT ROLE HOL_ROLE TO USER IDENTIFIER($MY_USER);
-
-GRANT EXECUTE TASK ON ACCOUNT TO ROLE HOL_ROLE;
-GRANT MONITOR EXECUTION ON ACCOUNT TO ROLE HOL_ROLE;
-GRANT IMPORTED PRIVILEGES ON DATABASE SNOWFLAKE TO ROLE HOL_ROLE;
-
--- Databases
-CREATE OR REPLACE DATABASE HOL_DB;
-GRANT OWNERSHIP ON DATABASE HOL_DB TO ROLE HOL_ROLE;
-
--- Warehouses
-CREATE OR REPLACE WAREHOUSE HOL_WH WAREHOUSE_SIZE = XSMALL, AUTO_SUSPEND = 300, AUTO_RESUME= TRUE;
-GRANT OWNERSHIP ON WAREHOUSE HOL_WH TO ROLE HOL_ROLE;
-
 
 -- ----------------------------------------------------------------------------
 -- Step #3: Create the database level objects
 -- ----------------------------------------------------------------------------
-USE ROLE HOL_ROLE;
-USE WAREHOUSE HOL_WH;
-USE DATABASE HOL_DB;
+USE WAREHOUSE LOADING_XS_WH;
 
--- Schemas
-CREATE OR REPLACE SCHEMA EXTERNAL;
-CREATE OR REPLACE SCHEMA RAW_POS;
-CREATE OR REPLACE SCHEMA RAW_CUSTOMER;
-CREATE OR REPLACE SCHEMA HARMONIZED;
-CREATE OR REPLACE SCHEMA ANALYTICS;
-
--- External Frostbyte objects
-USE SCHEMA EXTERNAL;
-CREATE OR REPLACE FILE FORMAT PARQUET_FORMAT
-    TYPE = PARQUET
-    COMPRESSION = SNAPPY
+-- Create file format types for ease of loading data
+CREATE FILE FORMAT IF NOT EXISTS CSV_FORMAT
+    TYPE = CSV
+    FIELD_DELIMITER = ','
+    SKIP_HEADER = 1
 ;
-CREATE OR REPLACE STAGE FROSTBYTE_RAW_STAGE
-    URL = 's3://sfquickstarts/data-engineering-with-snowpark-python/'
+CREATE FILE FORMAT IF NOT EXISTS XML_FORMAT
+    TYPE = XML
+    COMPRESSION = NONE
 ;
+-- ----------------------------------------------------------------------------
+-- BRONZE (stage 1) of data lake; raw data
 
--- ANALYTICS objects
-USE SCHEMA ANALYTICS;
--- This will be added in step 5
---CREATE OR REPLACE FUNCTION ANALYTICS.FAHRENHEIT_TO_CELSIUS_UDF(TEMP_F NUMBER(35,4))
---RETURNS NUMBER(35,4)
---AS
---$$
---    (temp_f - 32) * (5/9)
---$$;
+-- CREATE DATABASE IF NOT EXISTS ALL_RAW_DB;
+-- GRANT OWNERSHIP ON DATABASE ALL_RAW_DB TO ROLE SYSADMIN;
+-- CREATE SCHEMA IF NOT EXISTS VISITS;
+USE DATABASE ALL_RAW_DB;
+USE SCHEMA VISITS;
+CREATE OR REPLACE TABLE ALL_RAW_DB.VISITS.RAW_VISITS_FRAHMAN_SNOWPARK (
+	SHOPPERTRAK_SITE_ID VARCHAR(50) NOT NULL,
+	ORBIT NUMBER(38,0),
+	INCREMENT_START TIMESTAMP_NTZ(9) NOT NULL,
+	ENTERS NUMBER(38,0),
+	EXITS NUMBER(38,0),
+	IS_HEALTHY_DATA BOOLEAN NOT NULL,
+	SOURCE_FILE_NAME VARCHAR(250) NOT NULL,
+	SOURCE_FILE_ROW_NO NUMBER(38,0) NOT NULL,
+	SOURCE_LOAD_TIMESTAMP TIMESTAMP_LTZ(9) NOT NULL
+);
+CREATE or REPLACE TABLE ALL_RAW_DB.VISITS.UNSTRUCTURED_VISITS_FRAHMAN_SNOWPARK (
+	SRC VARIANT NOT NULL
+);
+-- Create staging for ShopperTrak visits CSV data
+CREATE STAGE IF NOT EXISTS shoppertrak_visits_snowpark
+    COMMENT = 'Stage for raw ShopperTrak visits CSV data (filled via Snowpark)'
+    STORAGE_INTEGRATION = visits_s3_integration
+    URL = 's3://nypl-data-lake-test/shoppertrak_visits_csv/'
+    FILE_FORMAT = (TYPE = CSV);
+-- Validate stage files exists
+LIST @shoppertrak_visits_snowpark;
+-- ----------------------------------------------------------------------------
+-- SILVER (stage 2) of data lake; transformed data
 
-CREATE OR REPLACE FUNCTION ANALYTICS.INCH_TO_MILLIMETER_UDF(INCH NUMBER(35,4))
-RETURNS NUMBER(35,4)
-    AS
-$$
-    inch * 25.4
-$$;
+-- CREATE DATABASE IF NOT EXISTS ALL_INT_DB;
+-- GRANT OWNERSHIP ON DATABASE ALL_INT_DB TO ROLE SYSADMIN;
+-- CREATE SCHEMA IF NOT EXISTS VISITS;
+USE DATABASE ALL_INT_DB;
+USE SCHEMA VISITS;
+CREATE or REPLACE DYNAMIC TABLE ALL_INT_DB.VISITS.HEALTHY_VISITS_FRAHMAN_SNOWPARK(
+	SHOPPERTRAK_SITE_ID,
+	ORBIT,
+	INCREMENT_START,
+	ENTERS,
+	EXITS,
+	SOURCE_FILE_NAME,
+	SOURCE_FILE_ROW_NO,
+	LOAD_TIMESTAMP
+) target_lag = '5 minutes' refresh_mode = AUTO initialize = ON_CREATE warehouse = LOADING_XS_WH
+ as
+SELECT
+    shoppertrak_site_id,
+    orbit,
+    increment_start,
+    enters,
+    exits,
+    source_file_name,
+    source_file_row_no,
+    current_timestamp() AS load_timestamp
+FROM all_raw_db.visits.raw_visits_frahman
+WHERE is_healthy_data = TRUE;
+
+CREATE or REPLACE DYNAMIC TABLE ALL_INT_DB.VISITS.UNHEALTHY_VISITS_FRAHMAN_SNOWPARK(
+	SHOPPERTRAK_SITE_ID,
+	ORBIT,
+	INCREMENT_START,
+	ENTERS,
+	EXITS,
+	SOURCE_FILE_NAME,
+	SOURCE_FILE_ROW_NO,
+	LOAD_TIMESTAMP
+) target_lag = '5 minutes' refresh_mode = AUTO initialize = ON_CREATE warehouse = LOADING_XS_WH
+ as
+SELECT
+    shoppertrak_site_id,
+    orbit,
+    increment_start,
+    enters,
+    exits,
+    source_file_name,
+    source_file_row_no,
+    current_timestamp() AS load_timestamp
+FROM all_raw_db.visits.raw_visits_frahman
+WHERE is_healthy_data = FALSE;
+-- ----------------------------------------------------------------------------
+-- GOLD (stage 3) of data lake; business-ready data
+
+-- CREATE DATABASE IF NOT EXISTS ALL_PRS_DB;
+-- GRANT OWNERSHIP ON DATABASE ALL_PRS_DB TO ROLE SYSADMIN;
+-- CREATE SCHEMA IF NOT EXISTS VISITS;
+-- Warehouses
+-- CREATE WAREHOUSE IF NOT EXISTS LOADING_XS_WH WAREHOUSE_SIZE = XSMALL, AUTO_SUSPEND = 300, AUTO_RESUME= TRUE;
+-- GRANT OWNERSHIP ON WAREHOUSE LOADING_XS_WH TO ROLE SYSADMIN;
+USE DATABASE ALL_PRS_DB;
+USE SCHEMA VISITS;
+
+create or replace dynamic table ALL_PRS_DB.VISITS.DAILY_VISITS_ORBIT_FRAHMAN_SNOWPARK(
+	SHOPPERTRAK_SITE_ID,
+	ORBIT,
+	VISITS_DATE,
+	AGG_ENTERS,
+	AGG_EXITS,
+	LOAD_TIMESTAMP
+) target_lag = '5 minutes' refresh_mode = AUTO initialize = ON_CREATE warehouse = LOADING_XS_WH
+ as
+SELECT 
+shoppertrak_site_id, visits_date, agg_enters, agg_exits, current_timestamp() AS load_timestamp
+FROM (
+    SELECT
+        shoppertrak_site_id,
+        TO_DATE(increment_start) AS visits_date,
+        SUM(enters) AS agg_enters,
+        SUM(exits) AS agg_exits
+    FROM all_int_db.visits.healthy_visits_frahman
+    GROUP BY shoppertrak_site_id, visits_date
+);
+
+CREATE or REPLACE DYNAMIC TABLE ALL_PRS_DB.VISITS.DAILY_VISITS_ORBIT_FRAHMAN_SNOWPARK(
+	SHOPPERTRAK_SITE_ID,
+	ORBIT,
+	VISITS_DATE,
+	AGG_ENTERS,
+	AGG_EXITS,
+	LOAD_TIMESTAMP
+) target_lag = '5 minutes' refresh_mode = AUTO initialize = ON_CREATE warehouse = LOADING_XS_WH
+ as
+SELECT 
+shoppertrak_site_id, orbit, visits_date, agg_enters, agg_exits, current_timestamp() AS load_timestamp
+FROM (
+    SELECT
+        shoppertrak_site_id,
+        orbit,
+        TO_DATE(increment_start) AS visits_date,
+        SUM(enters) AS agg_enters,
+        SUM(exits) AS agg_exits
+    FROM all_int_db.visits.healthy_visits_frahman
+    GROUP BY shoppertrak_site_id, orbit, visits_date
+);
+-- ----------------------------------------------------------------------------
