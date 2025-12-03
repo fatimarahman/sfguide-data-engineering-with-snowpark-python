@@ -85,7 +85,7 @@ SELECT
     source_file_name,
     source_file_row_no,
     current_timestamp() AS load_timestamp
-FROM all_raw_db.visits.raw_visits_frahman
+FROM all_raw_db.visits.raw_visits_frahman_snowpark
 WHERE is_healthy_data = TRUE;
 
 CREATE or REPLACE DYNAMIC TABLE ALL_INT_DB.VISITS.UNHEALTHY_VISITS_FRAHMAN_SNOWPARK(
@@ -96,7 +96,7 @@ CREATE or REPLACE DYNAMIC TABLE ALL_INT_DB.VISITS.UNHEALTHY_VISITS_FRAHMAN_SNOWP
 	EXITS,
 	SOURCE_FILE_NAME,
 	SOURCE_FILE_ROW_NO,
-	LOAD_TIMESTAMP
+	current_timestamp() AS LOAD_TIMESTAMP
 ) target_lag = '5 minutes' refresh_mode = AUTO initialize = ON_CREATE warehouse = LOADING_XS_WH
  as
 SELECT
@@ -106,9 +106,8 @@ SELECT
     enters,
     exits,
     source_file_name,
-    source_file_row_no,
-    current_timestamp() AS load_timestamp
-FROM all_raw_db.visits.raw_visits_frahman
+    source_file_row_no
+FROM all_raw_db.visits.raw_visits_frahman_snowpark
 WHERE is_healthy_data = FALSE;
 -- ----------------------------------------------------------------------------
 -- GOLD (stage 3) of data lake; business-ready data
@@ -122,14 +121,8 @@ WHERE is_healthy_data = FALSE;
 USE DATABASE ALL_PRS_DB;
 USE SCHEMA VISITS;
 
-create or replace dynamic table ALL_PRS_DB.VISITS.DAILY_VISITS_ORBIT_FRAHMAN_SNOWPARK(
-	SHOPPERTRAK_SITE_ID,
-	ORBIT,
-	VISITS_DATE,
-	AGG_ENTERS,
-	AGG_EXITS,
-	LOAD_TIMESTAMP
-) target_lag = '5 minutes' refresh_mode = AUTO initialize = ON_CREATE warehouse = LOADING_XS_WH
+create or replace dynamic table ALL_PRS_DB.VISITS.DAILY_VISITS_FRAHMAN_SNOWPARK
+lag = '5 minutes' refresh_mode = AUTO initialize = ON_CREATE warehouse = LOADING_XS_WH
  as
 SELECT 
 shoppertrak_site_id, visits_date, agg_enters, agg_exits, current_timestamp() AS load_timestamp
@@ -139,18 +132,12 @@ FROM (
         TO_DATE(increment_start) AS visits_date,
         SUM(enters) AS agg_enters,
         SUM(exits) AS agg_exits
-    FROM all_int_db.visits.healthy_visits_frahman
+    FROM all_int_db.visits.healthy_visits_frahman_snowpark
     GROUP BY shoppertrak_site_id, visits_date
 );
 
-CREATE or REPLACE DYNAMIC TABLE ALL_PRS_DB.VISITS.DAILY_VISITS_ORBIT_FRAHMAN_SNOWPARK(
-	SHOPPERTRAK_SITE_ID,
-	ORBIT,
-	VISITS_DATE,
-	AGG_ENTERS,
-	AGG_EXITS,
-	LOAD_TIMESTAMP
-) target_lag = '5 minutes' refresh_mode = AUTO initialize = ON_CREATE warehouse = LOADING_XS_WH
+CREATE or REPLACE DYNAMIC TABLE ALL_PRS_DB.VISITS.DAILY_VISITS_ORBIT_FRAHMAN_SNOWPARK
+lag = '5 minutes' refresh_mode = AUTO initialize = ON_CREATE warehouse = LOADING_XS_WH
  as
 SELECT 
 shoppertrak_site_id, orbit, visits_date, agg_enters, agg_exits, current_timestamp() AS load_timestamp
